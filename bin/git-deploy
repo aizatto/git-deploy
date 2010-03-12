@@ -1,0 +1,228 @@
+#!/usr/bin/env ruby
+
+unless File.exists? 'deploy.yml'
+  puts "File does not exist: deploy.yml"
+  exit
+end
+
+require 'rubygems'
+require 'yaml'
+require 'uri'
+require 'net/ftp'
+require 'net/ssh'
+require 'net/sftp'
+require 'tempfile'
+
+# We figure out only which files need updating 
+# so don't upload duplicate files
+def changed_files(revision = nil)
+  remote_files = {}
+  if revision
+    command = "git log --name-status --pretty=oneline #{revision}"
+  else
+    command = "git log -n 1 --name-status --pretty=oneline"
+  end
+
+#  puts command
+
+  files = `#{command}`
+
+  case$?.exitstatus
+  when 0, 141
+    # pass
+  else
+    return false
+  end
+
+  files.split("\n").reverse.each do |line|
+    c = line[0..0]
+    c = 'M' if c == 'A'
+    
+    next unless c == 'M' || c == 'D'
+
+    file = line[2..-1]
+
+    if remote_files.key? file
+      if remote_files[file] == 'M' && c == 'D'
+          remote_files[file] = 'D'
+      elsif remote_files[file] == 'D' && c == 'M'
+        remote_files[file] = 'M'
+      end
+    else
+      remote_files[file] = c
+    end
+  end
+
+  remote_files
+end
+
+# Store the current revision
+revision = `git log -n 1 --oneline --format=%H`.chomp.strip
+revision_file = Tempfile.new revision
+revision_file.write revision
+revision_file.close
+
+failures = []
+
+services = YAML.load_file 'deploy.yml'
+settings = services.delete('settings') || {}
+
+puts settings.inspect
+
+services.each do |uri, options|
+  next if options['skip']
+
+  puts uri
+  uri = URI.parse(uri)
+
+  options['scheme']   = uri.scheme   if uri.scheme
+  options['user']     = uri.user     if uri.user
+  options['password'] = uri.password if uri.password
+  options['host']     = uri.host     if uri.host
+  options['port']     = uri.port     if uri.port
+  options['path']     = uri.path     if uri.path
+
+  begin
+    case options['scheme']
+    when 'sftp'
+      sftp = {}
+      sftp[:port] = uri.port if uri.port
+
+      Net::SFTP.start(options['host'], options['user'], sftp) do |sftp|
+        path = options['path'].empty? ? options['chdir'] : '/' + options['path']
+
+        remote_revision = false
+
+        begin
+          sftp.file.open("#{path}/REVISION", "r") do |f|
+            remote_revision = f.gets
+          end
+
+          puts "Remote Revision: #{remote_revision}"
+        rescue Net::SFTP::StatusException => e
+          raise e unless e.code == 2 && e.description == "no such file"
+          remote_revision = revision
+        end
+
+        if revision == remote_revision
+          if settings['ignore_if_same_revision']
+            puts "Same revision, ignoring"
+            next
+          end
+          remote_files = changed_files
+        else
+          remote_files = changed_files("#{revision}...#{remote_revision}")
+        end
+
+        next unless remote_files
+
+        remote_files.each do |file, modifier|
+          case modifier
+          when 'A', 'M'
+            puts "Uploading #{file}"
+            sftp.upload!(file, path + "/" + file)
+          when 'D'
+            sftp.remove(path + "/" + file)
+          end
+        end
+
+        puts 'Uploading REVISION'
+        sftp.upload(revision_file.path, "#{path}/REVISION")
+      end
+    when 'ftp'
+      directories = {}
+      puts "Connecting to #{uri.host}"
+      options['port'] = options['port'] || uri.port || 21
+
+      ftp = Net::FTP.new
+
+      if options['passive']
+        ftp.passive = true
+      end
+
+      if options['debug_mode']
+        ftp.debug_mode = true
+      end
+
+      ftp.binary = true
+
+      ftp.connect(options['host'], options['port'])
+      ftp.login(options['user'], options['password'])
+
+      ftp.chdir(options['path'].empty? ? options['chdir'] : '/' + options['path'])
+
+      # Read which revision is on the server
+      begin
+        remote_revision = false
+
+        ftp.getbinaryfile('REVISION', Tempfile.new(options['host']).path) do |line|
+          remote_revision = line.strip
+        end
+
+        puts "Remote Revision: #{remote_revision}"
+      rescue Net::FTPPermError => e
+        raise e unless e.message[0..2] == '550'
+        remote_revision = revision
+      end
+
+      if revision == remote_revision
+        if settings['ignore_if_same_revision']
+          puts "Same revision, ignoring"
+        else
+          puts "Same revision, overwriting"
+        end
+
+        remote_files = changed_files
+      else
+        remote_files = changed_files("#{revision}...#{remote_revision}")
+      end
+
+      next unless remote_files
+
+      remote_files.each do |file, modifier|
+        dir = File.dirname(file)
+
+        unless directories[dir]
+          begin
+            ftp.ls(dir)
+          rescue Net::FTPTempError
+            puts dir
+            ftp.mkdir(dir)
+          end
+
+          directories[dir] = true
+        end
+
+        case modifier
+        when 'A', 'M'
+          puts "Uploading #{file}"
+          ftp.puttextfile(file, file)
+        when 'D'
+          begin
+            puts "Deleting #{file}"
+            ftp.delete(file)
+          rescue Net::FTPPermError, Net::FTPReplyError => e
+            # 
+          end
+        end
+      end
+
+      puts 'Uploading REVISION'
+      ftp.puttextfile(revision_file.path, 'REVISION')
+
+      ftp.quit
+    end
+  rescue Net::FTPTempError, Net::FTPPermError, Errno::ETIMEDOUT, Errno::ECONNRESET => e
+    failures << [uri, e]
+  end
+end
+
+unless failures.empty?
+  puts "Failures"
+  failures.each do |site|
+    uri, e = *site
+    puts "#{uri}: #{e.class} #{e}"
+  end
+end
+
+revision_file.delete

@@ -1,0 +1,68 @@
+= git-deploy
+
+= Description
+
+git-deploy is a deployment tool to allow for quick and easy deployments based on
+the changes in a git repository.
+
+It was originally used to update multiple WordPress installations on shared hosting environments.
+Ideally Capistrano would have been the perfect tool, but generally shared hosting environments only
+allow for FTP access, which Capistrano does not support. Likewise rather than using a standard FTP program,
+when doing a deployment, I only need to upload the files that have been changed. This saves me both time and bandwidth.
+
+I needed something like Capistrano, but simpler.
+
+git-deploy supports deployment over SSH and FTP.
+
+= Installation
+
+git-deploy requires the Ruby gems <code>net-ssh</code>, <code>net-sftp</code>, <code>net-scp</code>.
+
+You can install them like so:
+
+  sudo gem install net-ssh net-sftp net-scp
+
+= Usage
+
+In the root directory of your source code, create a <code>deploy.yml</code> file.
+
+Here is a sample code:
+
+  'settings':
+    ignore_if_same_revision: true
+
+  'ftp://example:password@example.com:21/path/to/installation':
+    skip: false
+
+You use the URI scheme to define the location of your installation.
+If you do not want to use the URI scheme, and instead use another identifier. Feel free to do so.
+Just enter the settings for the host like so:
+
+  'example':
+    skip: false
+    scheme: ftp
+    user: example
+    password: password
+    host: example.com
+    port: 21
+    path: /path/to/installation
+		
+Note: The port field is optional in both the URI scheme, and when broken down
+
+Once you have done creating the <code>deploy.yml</code>, upload to your server a file called +REVISION+ with the revision string for the current revision residing on the server
+
+After you have commited your code to the repository. You can run
+
+  git deploy
+
+= How It Works
+
+<code>git-deploy</code> stores file called +REVISION+ on your server inside the root path to your application.
+This file stores the current revision of your application residing on your server.
+
+When you run a <code>git deploy</code>, git-deploy downloads the +REVISION+ file, and checks to see what
+files are different between revisions and either upload the changed files or deletes them from the server.
+
+= TODO
+
+* Create a Ruby gem for the script. Sadly <code>gem-deploy</code> was taken.

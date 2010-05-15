@@ -47,13 +47,22 @@ Just enter the settings for the host like so:
     port: 21
     path: /path/to/installation
 		
-Note: The port field is optional in both the URI scheme, and when broken down
+Note: The port field is optional in both the URI scheme and the broken down options
 
 Once you have done creating the <code>deploy.yml</code>, upload to your server a file called +REVISION+ with the revision string for the current revision residing on the server
 
 After you have commited your code to the repository. You can run
 
   git deploy
+
+
+You will also need to upload a +REVISION+ file to your server.
+
+To create a +REVISION+ file for +HEAD+, exexcute:
+
+  git rev-parse HEAD > REVISION
+
+This will create a +REVISION+ file which you will need to upload to your server
 
 = How It Works
 

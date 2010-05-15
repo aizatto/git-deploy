@@ -57,7 +57,7 @@ def changed_files(revision = nil)
 end
 
 # Store the current revision
-revision = `git log -n 1 --oneline --format=%H`.chomp.strip
+revision = `git rev-parse HEAD`.chomp.strip
 revision_file = Tempfile.new revision
 revision_file.write revision
 revision_file.close
@@ -67,7 +67,31 @@ failures = []
 services = YAML.load_file 'deploy.yml'
 settings = services.delete('settings') || {}
 
-puts settings.inspect
+module Git
+  class FTP
+    def self.mkdir_p(ftp, directory)
+      begin
+        parent = File.dirname(directory)
+        files = ftp.nlst(parent)
+
+        if directory == "." || files.any? { |a| a == directory }
+          return
+        else
+          puts "Creating Directory #{directory}"
+          ftp.mkdir(directory)
+        end
+      rescue Net::FTPTempError
+        begin
+          puts "Creating Directory #{directory}"
+          ftp.mkdir(directory)
+        rescue Net::FTPPermError => e
+          Git::FTP.mkdir_p(ftp, File.dirname(directory))
+          ftp.mkdir(directory)
+        end
+      end
+    end
+  end
+end
 
 services.each do |uri, options|
   next if options['skip']
@@ -183,12 +207,7 @@ services.each do |uri, options|
         dir = File.dirname(file)
 
         unless directories[dir]
-          begin
-            ftp.ls(dir)
-          rescue Net::FTPTempError
-            puts dir
-            ftp.mkdir(dir)
-          end
+          Git::FTP.mkdir_p(ftp, dir)
 
           directories[dir] = true
         end
@@ -196,7 +215,7 @@ services.each do |uri, options|
         case modifier
         when 'A', 'M'
           puts "Uploading #{file}"
-          ftp.puttextfile(file, file)
+          ftp.put(file, file)
         when 'D'
           begin
             puts "Deleting #{file}"
@@ -208,7 +227,7 @@ services.each do |uri, options|
       end
 
       puts 'Uploading REVISION'
-      ftp.puttextfile(revision_file.path, 'REVISION')
+      ftp.put(revision_file.path, 'REVISION')
 
       ftp.quit
     end

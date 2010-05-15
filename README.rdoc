@@ -56,7 +56,7 @@ After you have commited your code to the repository. You can run
   git deploy
 
 
-You will also need to upload a +REVISION+ file to your server.
+You will also need to upload a +REVISION+ file to your server inside the installation path, ie "/path/to/installation"
 
 To create a +REVISION+ file for +HEAD+, exexcute:
 

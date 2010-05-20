@@ -64,6 +64,15 @@ To create a +REVISION+ file for +HEAD+, exexcute:
 
 This will create a +REVISION+ file which you will need to upload to your server
 
+== Additional Keys
+
+The configuration for a site has additional and optional options:
+
+* <tt>skip</tt>: +true+ or +false+ (default). Whether to skip the configuration
+* <tt>debug_mode</tt>: +true+ or +false+ (default).  For FTP only. Outputs debugging information
+* <tt>passive</tt>:  +true+ or +false+ (default). For FTP only. Enable passive connection.
+* <tt>local_path</tt>: _string_.  Only consider files to upload in a particular local path.
+
 = How It Works
 
 <code>git-deploy</code> stores file called +REVISION+ on your server inside the root path to your application.

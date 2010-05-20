@@ -15,19 +15,19 @@ require 'tempfile'
 
 # We figure out only which files need updating 
 # so don't upload duplicate files
-def changed_files(revision = nil)
+def changed_files(local_path, revision = nil)
   remote_files = {}
   if revision
-    command = "git log --name-status --pretty=oneline #{revision}"
+    command = "git log --name-status --pretty=oneline #{revision} -- #{local_path}"
   else
-    command = "git log -n 1 --name-status --pretty=oneline"
+    command = "git log -n 1 --name-status --pretty=oneline -- #{local_path}"
   end
 
 #  puts command
 
   files = `#{command}`
 
-  case$?.exitstatus
+  case $?.exitstatus
   when 0, 141
     # pass
   else
@@ -106,6 +106,28 @@ services.each do |uri, options|
   options['port']     = uri.port     if uri.port
   options['path']     = uri.path     if uri.path
 
+  pwd = Dir.pwd
+
+  local_path = options['local_path']
+
+  if local_path
+    if local_path[0..0] == '/'
+      raise "Field `local_path` cannot be an absolute path"
+    end
+  else
+    local_path = ''
+  end
+
+  if local_path.length != 0
+    if local_path[-1..-1] != '/'
+      local_path += '/'
+    end
+
+    length = local_path.length
+  else
+    length = 0
+  end
+
   begin
     case options['scheme']
     when 'sftp'
@@ -133,20 +155,31 @@ services.each do |uri, options|
             puts "Same revision, ignoring"
             next
           end
-          remote_files = changed_files
+          remote_files = changed_files(local_path)
         else
-          remote_files = changed_files("#{revision}...#{remote_revision}")
+          remote_files = changed_files(local_path, "#{revision}...#{remote_revision}")
         end
 
         next unless remote_files
 
-        remote_files.each do |file, modifier|
+        remote_files.each do |local_file, modifier|
+          if length != 0
+            if local_file[0...length] != local_path
+              next
+            else
+              remote_file = local_file[length..-1]
+            end
+          else
+            remote_file = local_file
+          end
+
           case modifier
           when 'A', 'M'
-            puts "Uploading #{file}"
-            sftp.upload!(file, path + "/" + file)
+            puts "Uploading #{local_file}"
+            sftp.upload!(local_file, path + "/" + remote_file)
           when 'D'
-            sftp.remove(path + "/" + file)
+            puts "Deleting #{local_file}"
+            sftp.remove(path + "/" + remote_file)
           end
         end
 
@@ -179,7 +212,7 @@ services.each do |uri, options|
       begin
         remote_revision = false
 
-        ftp.getbinaryfile('REVISION', Tempfile.new(options['host']).path) do |line|
+        ftp.get('REVISION', Tempfile.new(options['host']).path) do |line|
           remote_revision = line.strip
         end
 
@@ -196,15 +229,25 @@ services.each do |uri, options|
           puts "Same revision, overwriting"
         end
 
-        remote_files = changed_files
+        remote_files = changed_files(local_path)
       else
-        remote_files = changed_files("#{revision}...#{remote_revision}")
+        remote_files = changed_files(local_path, "#{revision}...#{remote_revision}")
       end
 
       next unless remote_files
 
-      remote_files.each do |file, modifier|
-        dir = File.dirname(file)
+      remote_files.each do |local_file, modifier|
+        if length != 0
+          if local_file[0...length] != local_path
+            next
+          else
+            remote_file = local_file[length..-1]
+          end
+        else
+          remote_file = local_file
+        end
+
+        dir = File.dirname(remote_file)
 
         unless directories[dir]
           Git::FTP.mkdir_p(ftp, dir)
@@ -214,12 +257,12 @@ services.each do |uri, options|
 
         case modifier
         when 'A', 'M'
-          puts "Uploading #{file}"
-          ftp.put(file, file)
+          puts "Uploading #{local_file}"
+          ftp.put(local_file, remote_file)
         when 'D'
           begin
-            puts "Deleting #{file}"
-            ftp.delete(file)
+            puts "Deleting #{local_file}"
+            ftp.delete(remote_file)
           rescue Net::FTPPermError, Net::FTPReplyError => e
             # 
           end

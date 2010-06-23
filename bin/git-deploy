@@ -79,13 +79,12 @@ services = YAML.load_file 'deploy.yml'
 settings = services.delete('settings') || {}
 
 module Git
-  class FTP
+  class Service
     def initialize(uri, options)
-      @uri = @uri
+      @uri = uri
       @host = options['host']
       @options = options
       @scheme = options['scheme']
-      @port = options['port'] || uri.port || 21
     end
 
     def automate
@@ -100,6 +99,106 @@ module Git
         end
         self.disconnect
       end
+    end
+
+    def diff
+      # Decide upload strategy
+      if ARGV[0] == 'diff' || ARGV[0] == 'd'
+        @remote_files = diff_uncommitted(@options['local_path'])
+      else
+        @remote_files = self.diff_commited
+      end
+    end
+
+    def diff_committed
+      remote_revision = self.get_remote_revision
+
+      if @options['revision'] == remote_revision
+        if settings['ignore_if_same_revision']
+          puts "Same revision, ignoring"
+          next
+        end
+
+        puts "Same revision, overwriting"
+        remote_files = diff_committed(@options['local_path'])
+      else
+        remote_files = diff_committed(@options['local_path'], "#{@options['revision']}...#{remote_revision}")
+      end
+    end
+
+    def upload
+      length = @options['length']
+      @remote_files.each do |local_file, modifier|
+        if length != 0
+          if local_file[0...length] != local_path
+            next
+          else
+            remote_file = local_file[length..-1]
+          end
+        else
+          remote_file = local_file
+        end
+
+        case modifier
+        when 'A', 'M'
+          puts "Uploading #{local_file}"
+          self.put(local_file, remote_file)
+        when 'D'
+          puts "Deleting #{local_file}"
+          self.delete(remote_file)
+        end
+      end
+
+      puts 'Uploading REVISION'
+      self.put(@options['revision_file'].path, "REVISION")
+    end
+  end
+
+  class SFTP < Service
+    def initialize(uri, options)
+      super(uri, options)
+      @path = options['path'].empty? ? options['chdir'] : options['path']
+    end
+
+    def connect
+      puts "Connecting to #{@host}"
+      sftp_options = {}
+      sftp_options[:port] = @uri.port if @uri.port
+      @sftp = Net::SFTP.start(@options['host'], @options['user'], sftp_options)
+    end
+
+    def disconnect
+#      @sftp.close!
+    end
+
+    def put(local_file, remote_file)
+      @sftp.upload(local_file, "#{@path}/#{remote_file}")
+    end
+
+    def delete(remote_file)
+      @sftp.remove("#{@remote_file}")
+    end
+
+    def get_remote_revision
+      begin
+        @sftp.file.open("#{@path}/REVISION", "r") do |f|
+          remote_revision = f.gets
+        end
+
+        puts "Remote Revision: #{remote_revision}"
+      rescue Net::SFTP::StatusException => e
+        raise e unless e.code == 2 && e.description == "no such file"
+        remote_revision = revision
+      end
+      remote_revision
+    end
+  end
+
+  class FTP < Service
+    def initialize(uri, options)
+      super(url, options)
+      @remote_directories = {}
+      @port = options['port'] || uri.port || 21
     end
 
     def connect
@@ -123,89 +222,41 @@ module Git
     end
 
     def disconnect
-      puts 'Uploading REVISION'
-      @ftp.put(@options['revision_file'].path, 'REVISION')
       @ftp.quit
     end
 
-    def diff
-      # Decide upload strategy
-      if ARGV[0] == 'diff' || ARGV[0] == 'd'
-        @remote_files = diff_uncommitted(options['local_path'])
-      else
-        @remote_files = self.diff_commited
+    def put(local_file, remote_file)
+      dir = File.dirname(remote_file)
+
+      unless @remote_directories[dir]
+        self.mkdir_p(dir)
+        @remote_directories[dir] = true
       end
+    
+      @ftp.put(local_file, remote_file)
     end
 
-    def upload
-      directories = {}
-      length = @options['length']
-
-      @remote_files.each do |local_file, modifier|
-        if length != 0
-          if local_file[0...length] != options['local_path']
-            next
-          else
-            remote_file = local_file[length..-1]
-          end
-        else
-          remote_file = local_file
-        end
-
-        dir = File.dirname(remote_file)
-
-        unless directories[dir]
-          self.mkdir_p(dir)
-
-          directories[dir] = true
-        end
-
-        case modifier
-        when 'A', 'M'
-          puts "Uploading #{local_file}"
-          @ftp.put(local_file, remote_file)
-        when 'D'
-          begin
-            puts "Deleting #{local_file}"
-            @ftp.delete(remote_file)
-          rescue Net::FTPPermError, Net::FTPReplyError => e
-            # 
-          end
-        end
+    def delete(remote_file)
+      begin
+        @ftp.delete(remote_file)
+      rescue Net::FTPPermError, Net::FTPReplyError => e
+        # 
       end
     end
 
     def get_remote_revision
       remote_revision = false
-      @ftp.get('REVISION', Tempfile.new(@host).path) do |line|
-        remote_revision = line.strip
-      end
-      remote_revision
-    end
-
-    def diff_commited
       begin
-        remote_revision =  self.get_remote_revision
+        @ftp.get('REVISION', Tempfile.new(@host).path) do |line|
+          remote_revision = line.strip
+        end
 
         puts "Remote Revision: #{remote_revision}"
       rescue Net::FTPPermError => e
         raise e unless e.message[0..2] == '550'
         remote_revision = @options['revision']
       end
-
-      if @options['revision'] == remote_revision
-        if @options['ignore_if_same_revision']
-          puts "Same revision, ignoring"
-          return false
-        end
-
-        puts "Same revision, overwriting"
-
-        diff_committed(@options['local_path'])
-      else
-        puts "Uploading new revision"
-        diff_committed(@options['local_path'], "#{@options['revision']}...#{remote_revision}")
-      end
+      remote_revision
     end
 
     def mkdir_p(directory)
@@ -275,73 +326,11 @@ services.each do |uri, options|
   options['length'] = length
 
   begin
-    case options['scheme']
-    when 'sftp'
-      sftp = {}
-      sftp[:port] = uri.port if uri.port
-
-      Net::SFTP.start(options['host'], options['user'], sftp) do |sftp|
-        path = options['path'].empty? ? options['chdir'] : '/' + options['path']
-
-        if ARGV[0] == 'diff' || ARGV[0] == 'd'
-          remote_files = diff_uncommitted(local_path)
-        else
-          remote_revision = false
-
-          begin
-            sftp.file.open("#{path}/REVISION", "r") do |f|
-              remote_revision = f.gets
-            end
-
-            puts "Remote Revision: #{remote_revision}"
-          rescue Net::SFTP::StatusException => e
-            raise e unless e.code == 2 && e.description == "no such file"
-            remote_revision = revision
-          end
-
-          if revision == remote_revision
-            if settings['ignore_if_same_revision']
-              puts "Same revision, ignoring"
-              next
-            end
-
-            puts "Same revision, overwriting"
-            remote_files = diff_committed(local_path)
-          else
-            remote_files = diff_committed(local_path, "#{revision}...#{remote_revision}")
-          end
-        end
-
-        next unless remote_files
-
-        remote_files.each do |local_file, modifier|
-          if length != 0
-            if local_file[0...length] != local_path
-              next
-            else
-              remote_file = local_file[length..-1]
-            end
-          else
-            remote_file = local_file
-          end
-
-          case modifier
-          when 'A', 'M'
-            puts "Uploading #{local_file}"
-            sftp.upload!(local_file, path + "/" + remote_file)
-          when 'D'
-            puts "Deleting #{local_file}"
-            sftp.remove(path + "/" + remote_file)
-          end
-        end
-
-        puts 'Uploading REVISION'
-        sftp.upload(revision_file.path, "#{path}/REVISION")
-      end
-    when 'ftp'
-      ftp = Git::FTP.new(uri, options)
-      ftp.automate
+    service = case options['scheme']
+    when 'sftp' then Git::SFTP.new(uri, options)
+    when 'ftp'  then Git::FTP.new(uri, options)
     end
+    service.automate
   rescue Net::FTPTempError, Net::FTPPermError, Errno::ETIMEDOUT, Errno::ECONNRESET => e
     failures << [uri, e]
   end

@@ -13,60 +13,6 @@ require 'net/ssh'
 require 'net/sftp'
 require 'tempfile'
 
-def diff_uncommitted(local_path)
-  command = "git diff --name-status"
-  changed_files(command)
-end
-
-# We figure out only which files need updating 
-# so don't upload duplicate files
-def diff_committed(local_path, revision = nil)
-  remote_files = {}
-  if revision
-    command = "git log --name-status --pretty=oneline #{revision} -- #{local_path}"
-  else
-    command = "git log -n 1 --name-status --pretty=oneline -- #{local_path}"
-  end
-
-#  puts command
-
-  changed_files(command)
-end
-
-def changed_files(command)
-  files = `#{command}`
-
-  case $?.exitstatus
-  when 0, 141
-    # pass
-  else
-    return false
-  end
-
-  remote_files = {}
-
-  files.split("\n").reverse.each do |line|
-    c = line[0..0]
-    c = 'M' if c == 'A'
-    
-    next unless c == 'M' || c == 'D'
-
-    file = line[2..-1]
-
-    if remote_files.key? file
-      if remote_files[file] == 'M' && c == 'D'
-          remote_files[file] = 'D'
-      elsif remote_files[file] == 'D' && c == 'M'
-        remote_files[file] = 'M'
-      end
-    else
-      remote_files[file] = c
-    end
-  end
-
-  remote_files
-end
-
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
 revision_file = Tempfile.new revision
@@ -79,6 +25,62 @@ services = YAML.load_file 'deploy.yml'
 settings = services.delete('settings') || {}
 
 module Git
+  class << self
+    def diff_uncommitted(local_path)
+      command = "git diff --name-status"
+      changed_files(command)
+    end
+
+# We figure out only which files need updating 
+# so don't upload duplicate files
+    def diff_committed(local_path, revision = nil)
+      remote_files = {}
+      if revision
+        command = "git log --name-status --pretty=oneline #{revision} -- #{local_path}"
+      else
+        command = "git log -n 1 --name-status --pretty=oneline -- #{local_path}"
+      end
+
+#  puts command
+
+      changed_files(command)
+    end
+
+    def changed_files(command)
+      files = `#{command}`
+
+      case $?.exitstatus
+      when 0, 141
+        # pass
+      else
+        return false
+      end
+
+      remote_files = {}
+
+      files.split("\n").reverse.each do |line|
+        c = line[0..0]
+        c = 'M' if c == 'A'
+
+        next unless c == 'M' || c == 'D'
+
+        file = line[2..-1]
+
+        if remote_files.key? file
+          if remote_files[file] == 'M' && c == 'D'
+              remote_files[file] = 'D'
+          elsif remote_files[file] == 'D' && c == 'M'
+            remote_files[file] = 'M'
+          end
+        else
+          remote_files[file] = c
+        end
+      end
+
+      remote_files
+    end
+  end
+
   class Service
     def initialize(uri, options)
       @uri = uri
@@ -104,9 +106,9 @@ module Git
     def diff
       # Decide upload strategy
       if ARGV[0] == 'diff' || ARGV[0] == 'd'
-        @remote_files = diff_uncommitted(@options['local_path'])
+        @remote_files = Git.diff_uncommitted(@options['local_path'])
       else
-        @remote_files = self.diff_commited
+        @remote_files = self.diff_committed
       end
     end
 
@@ -120,9 +122,9 @@ module Git
         end
 
         puts "Same revision, overwriting"
-        remote_files = diff_committed(@options['local_path'])
+        remote_files = Git.diff_committed(@options['local_path'])
       else
-        remote_files = diff_committed(@options['local_path'], "#{@options['revision']}...#{remote_revision}")
+        remote_files = Git.diff_committed(@options['local_path'], "#{@options['revision']}...#{remote_revision}")
       end
     end
 
@@ -163,6 +165,7 @@ module Git
     def connect
       puts "Connecting to #{@host}"
       sftp_options = {}
+#      sftp_options[:verbose] = :debug
       sftp_options[:port] = @uri.port if @uri.port
       @sftp = Net::SFTP.start(@options['host'], @options['user'], sftp_options)
     end
@@ -172,11 +175,11 @@ module Git
     end
 
     def put(local_file, remote_file)
-      @sftp.upload(local_file, "#{@path}/#{remote_file}")
+      @sftp.upload!(local_file, "#{@path}/#{remote_file}")
     end
 
     def delete(remote_file)
-      @sftp.remove("#{@remote_file}")
+      @sftp.remove!("#{@remote_file}")
     end
 
     def get_remote_revision
@@ -196,7 +199,7 @@ module Git
 
   class FTP < Service
     def initialize(uri, options)
-      super(url, options)
+      super(uri, options)
       @remote_directories = {}
       @port = options['port'] || uri.port || 21
     end

@@ -6,6 +6,7 @@ unless File.exists? 'deploy.yml'
 end
 
 require 'rubygems'
+require 'timeout'
 require 'yaml'
 require 'uri'
 require 'net/ftp'
@@ -19,35 +20,38 @@ revision_file = Tempfile.new revision
 revision_file.write revision
 revision_file.close
 
-failures = []
+service_failures = {}
 
 services = YAML.load_file 'deploy.yml'
 settings = services.delete('settings') || {}
 
+trap 'INT' do
+  raise Interrupt, nil
+end
+
 module Git
   class << self
     def diff_uncommitted(local_path)
-      command = "git diff --name-status"
+      command = "git diff --name-status; git diff --cached --name-status"
       changed_files(command)
     end
 
-# We figure out only which files need updating 
-# so don't upload duplicate files
+    # We figure out only which files need updating
+    # so don't upload duplicate files
     def diff_committed(local_path, revision = nil)
       remote_files = {}
       if revision
-        command = "git log --name-status --pretty=oneline #{revision} -- #{local_path}"
+        command = "git diff --name-status #{revision} -- #{local_path}"
       else
-        command = "git log -n 1 --name-status --pretty=oneline -- #{local_path}"
+        command = "git diff --name-status HEAD^ -- #{local_path}"
       end
-
-#  puts command
 
       changed_files(command)
     end
 
     def changed_files(command)
       files = `#{command}`
+      puts command
 
       case $?.exitstatus
       when 0, 141
@@ -61,6 +65,7 @@ module Git
       files.split("\n").reverse.each do |line|
         c = line[0..0]
         c = 'M' if c == 'A'
+        c = 'M' if c == 'C'
 
         next unless c == 'M' || c == 'D'
 
@@ -82,28 +87,74 @@ module Git
   end
 
   class Service
+    attr_reader :failures
+
     def initialize(uri, options)
       @uri = uri
       @host = options['host']
       @options = options
       @scheme = options['scheme']
+      @failures = []
+      @max_retries = options['retries'] || 1
+      @max_retries = 1 if @max_retries <= 0
     end
 
     def automate
-      self.connect
-      if self.diff
-        if @options['maintenance_file'] && @options['maintenance_deploy_to']
-          @ftp.put(@options['maintenance_file'], @options['maintenance_deploy_to'])
+      upload_maintenance_file = @options['maintenance_file'] && @options['maintenance_deploy_to']
+
+      tries = 1
+      until tries > @max_retries
+        self.connect
+        begin
+          if ! self.diff
+            return
+          end
+
+          if upload_maintenance_file
+            puts "Uploading Maintenance file"
+            @ftp.put(@options['maintenance_file'], @options['maintenance_deploy_to'])
+          end
+          self.upload
+          if upload_maintenance_file
+            puts "Removing Maintenance file"
+            @ftp.put(@options['maintenance_deploy_to'], @options['maintenance_deploy_to'])
+          end
+          self.disconnect
+          return true
+        rescue Interrupt, Errno::ETIMEDOUT, Errno::ECONNRESET, Timeout::Error => e
+          tries += 1
+          @failures << e
+
+          puts "Interrupting...going to retry"
+
+          if e.is_a? Interrupt
+            begin
+              Timeout::timeout(5) do
+                self.disconnect
+              end
+            rescue
+            end
+          end
+
+          if tries == @max_tries
+            puts "Not retrying (#{tries} out of #{@max_retries})"
+          else
+            puts "Retrying (#{tries} out of #{@max_retries})"
+          end
+        rescue Net::FTPTempError, Net::FTPPermError => e
+          @failures << e
+          return  false
         end
-        self.upload
-        if @options['maintenance_file'] && @options['maintenance_deploy_to']
-          @ftp.put(@options['maintenance_deploy_to'], @options['maintenance_deploy_to'])
-        end
-        self.disconnect
       end
+
+      tries != @max_retries
     end
 
     def diff
+      if @remote_files.is_a? Hash
+        return @remote_files
+      end
+
       # Decide upload strategy
       if ARGV[0] == 'diff' || ARGV[0] == 'd'
         @remote_files = Git.diff_uncommitted(@options['local_path'])
@@ -116,7 +167,7 @@ module Git
       remote_revision = self.get_remote_revision
 
       if @options['revision'] == remote_revision
-        if settings['ignore_if_same_revision']
+        if @options['ignore_if_same_revision']
           puts "Same revision, ignoring"
           next
         end
@@ -124,7 +175,7 @@ module Git
         puts "Same revision, overwriting"
         remote_files = Git.diff_committed(@options['local_path'])
       else
-        remote_files = Git.diff_committed(@options['local_path'], "#{@options['revision']}...#{remote_revision}")
+        remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD")
       end
     end
 
@@ -132,7 +183,7 @@ module Git
       length = @options['length']
       @remote_files.each do |local_file, modifier|
         if length != 0
-          if local_file[0...length] != local_path
+          if local_file[0...length] != @options['local_path']
             next
           else
             remote_file = local_file[length..-1]
@@ -142,13 +193,14 @@ module Git
         end
 
         case modifier
-        when 'A', 'M'
+        when 'A', 'M', 'C'
           puts "Uploading #{local_file}"
           self.put(local_file, remote_file)
         when 'D'
           puts "Deleting #{local_file}"
           self.delete(remote_file)
         end
+        @remote_files.delete(local_file)
       end
 
       puts 'Uploading REVISION'
@@ -274,13 +326,18 @@ module Git
           @ftp.mkdir(directory)
         end
       rescue Net::FTPPermError
-        # Pass
+        self.mkdir_p(File.dirname(directory))
+        begin
+          @ftp.mkdir(directory)
+        rescue Net::FTPPermError
+          # pass
+        end
       rescue Net::FTPTempError
         begin
           puts "Creating Directory #{directory}"
           @ftp.mkdir(directory)
         rescue Net::FTPPermError => e
-          self.mkdir_p(@ftp, File.dirname(directory))
+          self.mkdir_p(File.dirname(directory))
           @ftp.mkdir(directory)
         end
       end
@@ -328,22 +385,21 @@ services.each do |uri, options|
 
   options['length'] = length
 
-  begin
-    service = case options['scheme']
-    when 'sftp' then Git::SFTP.new(uri, options)
-    when 'ftp'  then Git::FTP.new(uri, options)
-    end
-    service.automate
-  rescue Net::FTPTempError, Net::FTPPermError, Errno::ETIMEDOUT, Errno::ECONNRESET => e
-    failures << [uri, e]
+  service = case options['scheme']
+  when 'sftp' then Git::SFTP.new(uri, options)
+  when 'ftp'  then Git::FTP.new(uri, options)
+  end
+  unless service.automate
+    service_failures[uri] = service.failures
   end
 end
 
-unless failures.empty?
+unless service_failures.empty?
   puts "Failures"
-  failures.each do |site|
-    uri, e = *site
-    puts "#{uri}: #{e.class} #{e}"
+  service_failures.each do |uri, failures|
+    failures.each do |failure|
+      puts "#{uri}: #{failure.class} #{failure}"
+    end
   end
 end
 

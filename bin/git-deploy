@@ -169,7 +169,6 @@ module Git
       if @options['revision'] == remote_revision
         if @options['ignore_if_same_revision']
           puts "Same revision, ignoring"
-          next
         end
 
         puts "Same revision, overwriting"

@@ -175,10 +175,10 @@ module Git
       if @options['revision'] == remote_revision
         if @options['ignore_if_same_revision']
           puts "Same revision, ignoring"
+        else
+          puts "Same revision, overwriting"
+          remote_files = Git.diff_committed(@options['local_path'])
         end
-
-        puts "Same revision, overwriting"
-        remote_files = Git.diff_committed(@options['local_path'])
       else
         remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD")
       end

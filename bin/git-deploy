@@ -1,9 +1,15 @@
 #!/usr/bin/env ruby
-
-unless File.exists? 'deploy.yml'
-  puts "File does not exist: deploy.yml"
+  
+if ARGV[0].nil? || ARGV[0].empty?
+deploy = 'deploy.yml'
+else
+deploy = ARGV[0] + '.yml';
+end  
+  
+unless File.exists? deploy
+  puts "File does not exist: " + deploy
   exit
-end
+end                    
 
 require 'rubygems'
 require 'timeout'
@@ -22,7 +28,7 @@ revision_file.close
 
 service_failures = {}
 
-services = YAML.load_file 'deploy.yml'
+services = YAML.load_file deploy
 settings = services.delete('settings') || {}
 
 trap 'INT' do

@@ -107,17 +107,19 @@ module Git
         self.connect
         begin
           if ! self.diff
+            self.disconnect
             return
           end
 
           if upload_maintenance_file
             puts "Uploading Maintenance file"
-            @ftp.put(@options['maintenance_file'], @options['maintenance_deploy_to'])
+            self.upload_maintenance_file
           end
           self.upload
+          self.upload_revision_file
           if upload_maintenance_file
             puts "Removing Maintenance file"
-            @ftp.put(@options['maintenance_deploy_to'], @options['maintenance_deploy_to'])
+            self.remove_maintenance_file
           end
           self.disconnect
           return true
@@ -169,7 +171,7 @@ module Git
       if @options['revision'] == remote_revision
         if @options['ignore_if_same_revision']
           puts "Same revision, ignoring"
-          next
+          return false
         end
 
         puts "Same revision, overwriting"
@@ -202,10 +204,21 @@ module Git
         end
         @remote_files.delete(local_file)
       end
+    end
 
+    def upload_revision_file
       puts 'Uploading REVISION'
       self.put(@options['revision_file'].path, "REVISION")
     end
+
+    def upload_maintenance_file
+      self.put(@options['maintenance_file'], @options['maintenance_deploy_to'])
+    end
+
+    def remove_maintenance_file
+      self.put(@options['maintenance_deploy_to'], @options['maintenance_deploy_to'])
+    end
+
   end
 
   class SFTP < Service
@@ -247,6 +260,7 @@ module Git
       end
       remote_revision
     end
+
   end
 
   class FTP < Service
@@ -342,6 +356,7 @@ module Git
         end
       end
     end
+
   end
 end
 
@@ -389,13 +404,15 @@ services.each do |uri, options|
   when 'sftp' then Git::SFTP.new(uri, options)
   when 'ftp'  then Git::FTP.new(uri, options)
   end
-  unless service.automate
+  service.automate
+  unless service.failures.empty?
     service_failures[uri] = service.failures
   end
 end
 
 unless service_failures.empty?
   puts "Failures"
+  puts service_failures.inspect
   service_failures.each do |uri, failures|
     failures.each do |failure|
       puts "#{uri}: #{failure.class} #{failure}"

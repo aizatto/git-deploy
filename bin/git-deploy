@@ -254,9 +254,10 @@ module Git
     end
 
     def get_remote_revision
+      remote_revision = false
       begin
         @sftp.file.open("#{@path}/REVISION", "r") do |f|
-          remote_revision = f.gets
+          remote_revision = f.gets.strip
         end
 
         puts "Remote Revision: #{remote_revision}"

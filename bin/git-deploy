@@ -21,8 +21,7 @@ require 'net/sftp'
 require 'tempfile'
 
 # Ignored files
-
-ignore_file_list = [ "deploy.yml" ];
+$ignore_file_list = [ "deploy.yml" ];
 
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
@@ -90,8 +89,8 @@ module Git
         next unless c == 'M' || c == 'D'
 
         file = line[2..-1]
-
-        if ignore_file_list.include? file
+                
+        if not $ignore_file_list.include? file
           if remote_files.key? file
             if remote_files[file] == 'M' && c == 'D'
               remote_files[file] = 'D'
@@ -406,6 +405,9 @@ services.each do |uri, options|
   options['host']     = uri.host     if uri.host
   options['port']     = uri.port     if uri.port
   options['path']     = uri.path     if uri.path
+  
+  $ignore_file_list = ($ignore_file_list | options['ignore_file_list']) if options['ignore_file_list']
+  
   options.merge!(settings)
 
   pwd = Dir.pwd

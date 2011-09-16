@@ -28,9 +28,6 @@ In the root directory of your source code, create a <code>deploy.yml</code> file
 
 Here is a sample code:
 
-  'settings':
-    ignore_if_same_revision: true
-
   'ftp://example:password@example.com:21/path/to/installation':
     skip: false
 
@@ -46,6 +43,7 @@ Just enter the settings for the host like so:
     host: example.com
     port: 21
     path: /path/to/installation
+    overwrite_if_same_revision: true
 		
 Note: The port field is optional in both the URI scheme and the broken down options
 

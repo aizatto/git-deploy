@@ -185,7 +185,7 @@ module Git
           remote_files = Git.diff_committed(@options['local_path'])
         end
       elsif @options['revision'] == remote_revision
-        if @options['ignore_if_same_revision']
+        if !@options['overwrite_if_same_revision']
           puts "Same revision, ignoring"
           return false
         end

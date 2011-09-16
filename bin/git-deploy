@@ -20,6 +20,7 @@ require 'net/ssh'
 require 'net/sftp'
 require 'tempfile'
 
+STDOUT.sync = true
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
 revision_file = Tempfile.new revision

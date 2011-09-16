@@ -48,11 +48,14 @@ module Git
       remote_files = {}
       if revision
         command = "git diff --name-status #{revision} -- #{local_path}"
+        changed_files(command)
       else
-        command = "git diff --name-status HEAD^ -- #{local_path}"
+        remote_files = {}
+        `git ls-files`.split("\n").each {|file| remote_files[file] = 'M'}
+        remote_files
       end
 
-      changed_files(command)
+      
     end
 
     def changed_files(command)
@@ -173,6 +176,11 @@ module Git
 
     def diff_committed
       remote_revision = self.get_remote_revision
+      
+      if !remote_revision 
+        puts 'Missing remote revision in non empty directory'
+        exit 
+      end
 
       if @options['revision'] == remote_revision
         if @options['ignore_if_same_revision']
@@ -263,9 +271,13 @@ module Git
         puts "Remote Revision: #{remote_revision}"
       rescue Net::SFTP::StatusException => e
         raise e unless e.code == 2 && e.description == "no such file"
-        remote_revision = revision
+        remote_revision = dir_empty? ? revision : false
       end
       remote_revision
+    end
+    
+    def dir_empty?
+     @sftp.list('*').empty?
     end
 
   end
@@ -330,9 +342,13 @@ module Git
         puts "Remote Revision: #{remote_revision}"
       rescue Net::FTPPermError => e
         raise e unless e.message[0..2] == '550'
-        remote_revision = @options['revision']
+        remote_revision = dir_empty? ? @options['revision'] : false
       end
       remote_revision
+    end
+    
+    def dir_empty?
+     @ftp.list('*').empty?
     end
 
     def mkdir_p(directory)

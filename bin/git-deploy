@@ -191,7 +191,7 @@ module Git
         puts "Same revision, overwriting"
         remote_files = Git.diff_committed(@options['local_path'])
       else
-        remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD")
+        remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}..HEAD")
       end
     end
 

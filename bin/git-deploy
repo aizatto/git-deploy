@@ -19,6 +19,7 @@ require 'net/ftp'
 require 'net/ssh'
 require 'net/sftp'
 require 'tempfile'
+require 'socket'
 
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
@@ -365,6 +366,119 @@ module Git
     end
 
   end
+  
+  class FTPS < Service
+    def initialize(uri, options)
+      super(uri, options)
+      @remote_directories = {}
+      @port = options['port'] || uri.port || 21
+    end
+
+    def connect
+      puts "Connecting to #{@host} with TLS"
+
+      @ftps = Net::FTPTLS.new
+
+      if @options['passive']
+        @ftps.passive = true
+      end
+
+      if @options['debug_mode']
+        @ftps.debug_mode = true
+      end
+      
+      @ftps.binary = true
+      @ftps.connect(@options['host'], @options['port'])
+      @ftps.login(@options['user'], @options['password'])
+      
+      @ftps.chdir(@options['path'].empty? ? @options['chdir'] : '/' + @options['path'])    
+    end
+
+    def disconnect
+      @ftps.quit
+    end
+
+    def put(local_file, remote_file)
+      dir = File.dirname(remote_file)
+
+      unless @remote_directories[dir]
+        self.mkdir_p(dir)
+        @remote_directories[dir] = true
+      end
+    
+      @ftps.put(local_file, remote_file)
+    end
+
+    def delete(remote_file)
+      begin
+        @ftps.delete(remote_file)
+      rescue Net::FTPPermError, Net::FTPReplyError => e
+         
+      end
+    end
+
+    def get_remote_revision
+      remote_revision = false
+      begin
+        @ftps.get('REVISION', Tempfile.new(@host).path) do |line|
+          remote_revision = line.strip
+        end
+
+        puts "Remote Revision: #{remote_revision}"
+      rescue Net::FTPPermError => e
+        raise e unless e.message[0..2] == '550'
+        remote_revision = @options['revision']
+      end
+      remote_revision
+    end
+
+    def mkdir_p(directory)
+      begin
+        parent = File.dirname(directory)
+        files = @ftps.nlst(parent)
+
+        if directory == "." || files.any? { |a| a == directory }
+          return
+        else
+          puts "Creating Directory #{directory}"
+          @ftps.mkdir(directory)
+        end
+      rescue Net::FTPPermError
+        self.mkdir_p(File.dirname(directory))
+        begin
+          @ftps.mkdir(directory)
+        rescue Net::FTPPermError
+          # pass
+        end
+      rescue Net::FTPTempError
+        begin
+          puts "Creating Directory #{directory}"
+          @ftps.mkdir(directory)
+        rescue Net::FTPPermError => e
+          self.mkdir_p(File.dirname(directory))
+          @ftps.mkdir(directory)
+        end
+      end
+    end
+
+  end
+
+end
+
+module Net
+  class FTPTLS < FTP
+    def login(user = "anonymous", passwd = nil, acct = nil)
+      @ctx = OpenSSL::SSL::SSLContext.new('SSLv3')
+      @ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE
+      voidcmd("AUTH TLS")
+      @sock = OpenSSL::SSL::SSLSocket.new(@sock, @ctx)
+      @sock.connect
+      super(user, passwd, acct)
+      voidcmd("PBSZ 0")
+      #       voidcmd("PROT P") # uncomment if you want data encypted too.
+    end
+  end
+  
 end
 
 services.each do |uri, options|
@@ -410,6 +524,7 @@ services.each do |uri, options|
   service = case options['scheme']
   when 'sftp' then Git::SFTP.new(uri, options)
   when 'ftp'  then Git::FTP.new(uri, options)
+  when 'ftps'  then Git::FTPS.new(uri, options)
   end
   service.automate
   unless service.failures.empty?

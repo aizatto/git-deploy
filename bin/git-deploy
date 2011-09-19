@@ -3,7 +3,7 @@
 if ARGV[0].nil? || ARGV[0].empty?
   deploy = 'deploy.yml'
 else
-  deploy = ARGV[0] + '.yml';
+  deploy = ARGV[0] + '.yml'
 end
 
 unless File.exists? deploy
@@ -20,6 +20,9 @@ require 'net/ssh'
 require 'net/sftp'
 require 'tempfile'
 require 'socket'
+
+# Ignored files
+$ignore_file_list = ["deploy.yml", ".gitignore"]
 
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
@@ -45,18 +48,24 @@ module Git
 
     # We figure out only which files need updating
     # so don't upload duplicate files
-    def diff_committed(local_path, revision = nil)
+    def diff_committed(local_path, revision = nil, init = nil)
       remote_files = {}
       if revision
         command = "git diff --name-status #{revision} -- #{local_path}"
       else
         command = "git diff --name-status HEAD^ -- #{local_path}"
       end
-
-      changed_files(command)
+      
+      if init
+        command = "git ls-files -t"
+        changed_files(command, true)
+      else
+        changed_files(command)
+      end
+      
     end
 
-    def changed_files(command)
+    def changed_files(command, init = nil)
       files = `#{command}`
       puts command
 
@@ -73,20 +82,27 @@ module Git
         c = line[0..0]
         c = 'M' if c == 'A'
         c = 'M' if c == 'C'
+        
+        if init
+          c = 'M' if c == 'H'
+        end
 
         next unless c == 'M' || c == 'D'
 
         file = line[2..-1]
-
-        if remote_files.key? file
-          if remote_files[file] == 'M' && c == 'D'
+                
+        if not $ignore_file_list.include? file
+          if remote_files.key? file
+            if remote_files[file] == 'M' && c == 'D'
               remote_files[file] = 'D'
-          elsif remote_files[file] == 'D' && c == 'M'
-            remote_files[file] = 'M'
+            elsif remote_files[file] == 'D' && c == 'M'
+              remote_files[file] = 'M'
+            end
+          else
+            remote_files[file] = c
           end
-        else
-          remote_files[file] = c
         end
+        
       end
 
       remote_files
@@ -175,16 +191,22 @@ module Git
     def diff_committed
       remote_revision = self.get_remote_revision
 
-      if @options['revision'] == remote_revision
-        if @options['ignore_if_same_revision']
-          puts "Same revision, ignoring"
-          return false
-        end
-
-        puts "Same revision, overwriting"
-        remote_files = Git.diff_committed(@options['local_path'])
+      if remote_revision == 0
+        remote_revision = `git log --pretty=format:%H | tail -1`
+        puts "Init revision"
+        remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD", true)
       else
-        remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD")
+        if @options['revision'] == remote_revision
+          if @options['ignore_if_same_revision']
+            puts "Same revision, ignoring"
+            return false
+          end
+
+          puts "Same revision, overwriting"
+          remote_files = Git.diff_committed(@options['local_path'])
+        else
+          remote_files = Git.diff_committed(@options['local_path'], "#{remote_revision}...HEAD")
+        end
       end
     end
 
@@ -264,7 +286,8 @@ module Git
         puts "Remote Revision: #{remote_revision}"
       rescue Net::SFTP::StatusException => e
         raise e unless e.code == 2 && e.description == "no such file"
-        remote_revision = revision
+        remote_revision = 0
+        #remote_revision = revision
       end
       remote_revision
     end
@@ -331,7 +354,8 @@ module Git
         puts "Remote Revision: #{remote_revision}"
       rescue Net::FTPPermError => e
         raise e unless e.message[0..2] == '550'
-        remote_revision = @options['revision']
+        remote_revision = 0
+        #remote_revision = @options['revision']
       end
       remote_revision
     end
@@ -495,6 +519,9 @@ services.each do |uri, options|
   options['host']     = uri.host     if uri.host
   options['port']     = uri.port     if uri.port
   options['path']     = uri.path     if uri.path
+  
+  $ignore_file_list = ($ignore_file_list | options['ignore_file_list']) if options['ignore_file_list']
+  
   options.merge!(settings)
 
   pwd = Dir.pwd

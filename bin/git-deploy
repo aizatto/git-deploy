@@ -239,6 +239,7 @@ module Git
       sftp_options = {}
 #      sftp_options[:verbose] = :debug
       sftp_options[:port] = @uri.port if @uri.port
+      sftp_options[:password] = @options['password'] if @options['password']
       @sftp = Net::SFTP.start(@options['host'], @options['user'], sftp_options)
     end
 

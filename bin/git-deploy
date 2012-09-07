@@ -3,7 +3,7 @@
 if ARGV[0].nil? || ARGV[0].empty?
   deploy = 'deploy.yml'
 else
-  deploy = ARGV[0] + '.yml';
+  deploy = ARGV[0] + '.yml'
 end
 
 unless File.exists? deploy
@@ -22,6 +22,10 @@ require 'tempfile'
 require 'socket'
 
 STDOUT.sync = true
+
+# Ignored files
+$ignore_file_list = ["deploy.yml", ".gitignore"]
+
 # Store the current revision
 revision = `git rev-parse HEAD`.chomp.strip
 revision_file = Tempfile.new revision
@@ -56,11 +60,9 @@ module Git
         `git ls-files`.split("\n").each {|file| remote_files[file] = 'M'}
         remote_files
       end
-
-      
     end
 
-    def changed_files(command)
+    def changed_files(command, init = nil)
       files = `#{command}`
       puts command
 
@@ -77,20 +79,27 @@ module Git
         c = line[0..0]
         c = 'M' if c == 'A'
         c = 'M' if c == 'C'
+        
+        if init
+          c = 'M' if c == 'H'
+        end
 
         next unless c == 'M' || c == 'D'
 
         file = line[2..-1]
-
-        if remote_files.key? file
-          if remote_files[file] == 'M' && c == 'D'
+                
+        if not $ignore_file_list.include? file
+          if remote_files.key? file
+            if remote_files[file] == 'M' && c == 'D'
               remote_files[file] = 'D'
-          elsif remote_files[file] == 'D' && c == 'M'
-            remote_files[file] = 'M'
+            elsif remote_files[file] == 'D' && c == 'M'
+              remote_files[file] = 'M'
+            end
+          else
+            remote_files[file] = c
           end
-        else
-          remote_files[file] = c
         end
+        
       end
 
       remote_files
@@ -178,7 +187,6 @@ module Git
 
     def diff_committed
       remote_revision = self.get_remote_revision
-      
       if !remote_revision 
         if !dir_empty?
           puts 'Missing remote revision in non empty directory'
@@ -515,6 +523,9 @@ services.each do |uri, options|
   options['host']     = uri.host     if uri.host
   options['port']     = uri.port     if uri.port
   options['path']     = uri.path     if uri.path
+  
+  $ignore_file_list = ($ignore_file_list | options['ignore_file_list']) if options['ignore_file_list']
+  
   options.merge!(settings)
 
   pwd = Dir.pwd

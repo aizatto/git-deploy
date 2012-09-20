@@ -251,6 +251,8 @@ module Git
     def initialize(uri, options)
       super(uri, options)
       @path = options['path'].empty? ? options['chdir'] : options['path']
+      
+			@remote_directories = {}
     end
 
     def connect
@@ -267,6 +269,13 @@ module Git
     end
 
     def put(local_file, remote_file)
+      dir = File.dirname("#{@path}/#{remote_file}")
+
+      unless @remote_directories[dir]
+        self.mkdir_p(dir)
+        @remote_directories[dir] = true
+      end
+    
       @sftp.upload!(local_file, "#{@path}/#{remote_file}")
     end
 
@@ -290,8 +299,42 @@ module Git
     end
     
     def dir_empty?
+<<<<<<< HEAD
      @sftp.dir.list("#{@path}", '*').empty?
+=======
+			@sftp.dir.glob("#{@path}", "*").empty?
+>>>>>>> 8c6aec54b795e94e1339f3e917088c504409048c
     end
+    
+    def mkdir_p(directory)
+      begin
+        parent = File.dirname(directory)
+        
+        files = @sftp.dir.glob(parent, "*")
+
+        if directory == "." || files.any? { |a| a == directory }
+          return
+        else
+          puts "Creating Directory #{directory}"
+          @sftp.mkdir(directory)
+        end
+      rescue Net::SFTP::StatusException
+        self.mkdir_p(File.dirname(directory))
+        begin
+          @sftp.mkdir(directory)
+        rescue Net::SFTP::StatusException
+          # pass
+        end
+      rescue Net::SFTP::StatusException
+        begin
+          puts "Creating Directory #{directory}"
+          @sftp.mkdir(directory)
+        rescue Net::SFTP::StatusException => e
+          self.mkdir_p(File.dirname(directory))
+          @sftp.mkdir(directory)
+        end
+      end
+    end    
 
   end
 

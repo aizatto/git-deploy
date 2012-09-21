@@ -299,11 +299,7 @@ module Git
     end
     
     def dir_empty?
-<<<<<<< HEAD
-     @sftp.dir.list("#{@path}", '*').empty?
-=======
-			@sftp.dir.glob("#{@path}", "*").empty?
->>>>>>> 8c6aec54b795e94e1339f3e917088c504409048c
+      @sftp.dir.list("#{@path}", '*').empty?
     end
     
     def mkdir_p(directory)
